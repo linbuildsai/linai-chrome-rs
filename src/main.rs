@@ -119,33 +119,44 @@ async fn doctor() {
     println!("  ✅ {}", paths::home().display());
     println!();
     println!("桥");
-    let info = paths::read_bridge_info();
-    match &info {
-        None => {
-            println!("  ❌ bridge.json 不存在——桥没在跑。运行 `linai-chrome-rs bridge` 启动。");
-            return;
-        }
+    match &paths::read_bridge_info() {
+        None => println!("  ❌ bridge.json 不存在——桥没在跑。运行 `linai-chrome-rs bridge` 启动。"),
         Some(i) => {
             let alive = unsafe { libc::kill(i.pid as i32, 0) == 0 };
             if !alive {
                 println!("  ❌ bridge.json 记着的 pid {} 已经没了。重新运行 `linai-chrome-rs bridge`。", i.pid);
-                return;
+            } else {
+                println!("  ✅ 进程活着（pid {}，v{}）", i.pid, i.version);
+                // 桥活着才试握手（否则只是连一个不存在的端口，没意义）
+                let c = rpc::BridgeClient::new("doctor", None, None);
+                match tokio::time::timeout(Duration::from_secs(6), c.connect(Duration::from_secs(5))).await {
+                    Ok(Ok(())) => {
+                        let st = c.ext_state();
+                        if st.online {
+                            println!("  ✅ 握手正常 · Chrome 扩展在线（扩展 v{}）", st.version.unwrap_or_else(|| "?".into()));
+                        } else {
+                            println!("  ⚠️  握手正常 · 扩展不在线：点工具栏 huashu-chrome 图标 →「重连」；Chrome 没开就先开。");
+                        }
+                        c.close();
+                    }
+                    _ => println!("  ❌ 连不上桥（握手超时）。看 {} 的最后几行。", paths::log_file().display()),
+                }
             }
-            println!("  ✅ 进程活着（pid {}，v{}）", i.pid, i.version);
         }
     }
-    let c = rpc::BridgeClient::new("doctor", None, None);
-    match tokio::time::timeout(Duration::from_secs(6), c.connect(Duration::from_secs(5))).await {
-        Ok(Ok(())) => {
-            let st = c.ext_state();
-            if st.online {
-                println!("  ✅ 握手正常 · Chrome 扩展在线（扩展 v{}）", st.version.unwrap_or_else(|| "?".into()));
-            } else {
-                println!("  ⚠️  握手正常 · 扩展不在线：点工具栏 huashu-chrome 图标 →「重连」；Chrome 没开就先开。");
-            }
-            c.close();
+    // agent 探测独立于桥状态：桥没起来时这段照样有用（告诉你 install 会改哪些配置）
+    println!();
+    println!("本机 agent 的 MCP 配置（install 探测结果）");
+    let agents = install::found_agents_summary();
+    if agents.is_empty() {
+        println!("  没找到任何 agent 的配置。跑 `linai-chrome-rs install` 看手动配置指引。");
+    } else {
+        for (name, file, done) in &agents {
+            println!("  {} {} — {}", if *done { "✅" } else { "· " }, name, file.display());
         }
-        _ => println!("  ❌ 连不上桥（握手超时）。看 {} 的最后几行。", paths::log_file().display()),
+        if agents.iter().any(|(_, _, done)| !done) {
+            println!("  带 · 的还没配：跑 `linai-chrome-rs install` 一键写入（会先备份）。");
+        }
     }
     println!();
     println!("日志");

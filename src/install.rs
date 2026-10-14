@@ -3,7 +3,7 @@
 //! 一条铁律：**绝不静默改用户的配置文件**。先展示要做什么，备份，再写。
 //! 探测不到就说清楚，绝不猜。
 use regex::Regex;
-use serde_json::{json, Map, Value};
+use serde_json::{json, Value};
 use std::fs;
 use std::path::{Path, PathBuf};
 

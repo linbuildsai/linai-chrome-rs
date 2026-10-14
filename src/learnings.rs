@@ -352,7 +352,7 @@ pub fn clean_note(body: &str) -> String {
     let mut seen: HashSet<String> = HashSet::new();
     let mut out = String::new();
     let mut sec = String::new();
-    let mut flush = |sec: &mut String, out: &mut String, seen: &mut HashSet<String>| {
+    let flush = |sec: &mut String, out: &mut String, seen: &mut HashSet<String>| {
         let k = sec.trim().to_string();
         if !k.is_empty() && !(k.starts_with("## ") && seen.contains(&k)) {
             if !k.is_empty() {

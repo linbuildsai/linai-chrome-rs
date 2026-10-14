@@ -32,9 +32,6 @@ pub fn allowlist_file() -> PathBuf {
 pub fn log_file() -> PathBuf {
     home().join("bridge.log")
 }
-pub fn learnings_file() -> PathBuf {
-    home().join("learnings.json")
-}
 
 pub fn ensure_home() -> PathBuf {
     let h = home();
@@ -55,6 +52,11 @@ pub struct BridgeInfo {
     pub version: String,
     #[serde(default)]
     pub started_at: Option<String>,
+    /// "rust" = Rust 桥；缺省 = Node 原版桥。
+    /// 版本换代只踢同类：两个实现协议 v1 兼容，Rust CLI 连 Node 桥（或反之）
+    /// 是合法状态，互相踢会变成换代战争。
+    #[serde(default)]
+    pub kind: Option<String>,
 }
 
 /// 桥启动时写：端口、token、pid。token 每次启动轮换。

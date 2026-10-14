@@ -131,8 +131,8 @@ struct Waiting {
 pub struct Bridge {
     pub agents: Mutex<HashSet<ConnId>>,
     pub peers: Mutex<HashMap<ConnId, Peer>>,
-    pub pending: Mutex<HashMap<String, Pending>>,
-    pub waiting: Mutex<Vec<Waiting>>,
+    pending: Mutex<HashMap<String, Pending>>,
+    waiting: Mutex<Vec<Waiting>>,
     conn_seq: AtomicU64,
     last_activity: Mutex<Instant>,
     pub token: String,
@@ -222,6 +222,7 @@ impl Bridge {
                 pid: std::process::id(),
                 version: VERSION.to_string(),
                 started_at: Some(paths::now_iso()),
+                kind: Some("rust".into()),
             })?;
         }
         self.log(&format!("桥已启动 ws://127.0.0.1:{}", self.port));

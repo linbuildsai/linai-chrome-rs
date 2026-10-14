@@ -108,8 +108,11 @@ impl BridgeClient {
         while tokio::time::Instant::now() < deadline {
             let info = paths::read_bridge_info();
             if let Some(info) = &info {
-                // 桥是长驻单例，不读磁盘代码：版本对不上就当场换掉
-                if info.version != VERSION && !spawned {
+                // 桥是长驻单例，不读磁盘代码：版本对不上就当场换掉。
+                // 但只换**同类**桥——Node 原版桥和 Rust 桥协议兼容，共存合法，
+                // 互相踢会变成换代战争（两边都认为对方版本不对）。
+                let same_kind = info.kind.as_deref() == Some("rust");
+                if same_kind && info.version != VERSION && !spawned {
                     stop_bridge(info);
                     spawned = try_start_bridge();
                     tokio::time::sleep(Duration::from_millis(400)).await;

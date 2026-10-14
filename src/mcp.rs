@@ -80,7 +80,7 @@ struct State {
 }
 
 pub async fn run(flag_client: Option<String>) {
-    let mut client = BridgeClient::new(flag_client.as_deref().unwrap_or("unknown"), None, None);
+    let client = BridgeClient::new(flag_client.as_deref().unwrap_or("unknown"), None, None);
     let state = Arc::new(Mutex::new(State { client, host_resolved: false }));
 
     let stdin = std::io::stdin();
