@@ -35,8 +35,8 @@ Claude Code / Codex / Cursor / WorkBuddy …（任何 MCP 客户端）
 | 审计脱敏 | 按键名递归 + 正文凭据挖掘 | 同规则移植（含手机号数字边界） |
 | 配置目录 | `~/.huashu-chrome` | 同（`HUASHU_CHROME_HOME` 可覆盖，供测试隔离） |
 
-Rust 版聚焦**桥 + MCP + CLI** 这三个进程侧组件的单二进制化；原版的 `install`（自动写各 agent 配置）
-与经验回流的高级形态（剧本入库）暂未移植，MCP 配置手工加一条即可（见下）。
+Rust 版覆盖**桥 + MCP + CLI + install 自动化 + 经验回流（剧本草稿/入库）+ fetch 自动翻页**；
+`act` 剧本形状校验与超时预算和扩展侧同源规则，`learnings` 的清洗/留底/别名归并与原版语义一致。
 
 ## 安装
 
@@ -45,6 +45,12 @@ Rust 版聚焦**桥 + MCP + CLI** 这三个进程侧组件的单二进制化；�
 ```bash
 cargo build --release
 # 二进制在 target/release/linai-chrome-rs
+
+# 一键配置：探测本机已装的 agent（Claude Code / Codex / Cursor / WorkBuddy 等 20+，
+# 外加自动发现 ~/.<名字>/ 下遵循 mcpServers 惯例的配置），先备份再写入
+./target/release/linai-chrome-rs install
+./target/release/linai-chrome-rs install --dry-run   # 只看会改哪些配置，不写
+./target/release/linai-chrome-rs install --only codex
 ```
 
 加载扩展（只需一次）：
@@ -100,7 +106,7 @@ linai-chrome-rs audit -n 30            # 最近 30 条操作审计
 ## 测试
 
 ```bash
-cargo test                 # 脱敏规则单测（4 项）
+cargo test                 # 脱敏规则 + 经验库/剧本草稿/形状校验单测（9 项）
 ./test/run-e2e.sh          # 协议端到端：隔离目录起测试桥（8900），9 项断言
 ```
 
@@ -138,11 +144,9 @@ res 按 `__k` 配对且剥离、ping→pong、event 广播、agent 断线推 `se
 
 ### 缺点（诚实清单）
 
-**1. 功能覆盖不全（当前最大的短板）**
-- 原版 `install`（自动探测 20+ agent 并写各家 MCP 配置 + 扩展引导页）**未移植**，MCP 配置要手写一条 JSON。
-- 原版经验回流的高级形态（`act` 剧本草稿入库 saveDraft/adoptDraft、出厂站点经验 docs/经验/ 分发）**未移植**，Rust 版 learnings 只有基础的 get/save。
-- 原版 MCP 侧的 `fetch {pages}` 自动翻页循环、`upload` 的路径优先/base64 回退双通道中，翻页未移植。
-- 原版 532 行桥里的部分边角（版本换代自动踢桥的完整语义、多实例审计话术）只做了主干等价。
+**1. 功能覆盖**
+- `install` 自动化、`act` 剧本草稿入库（saveDraft/adoptDraft）、`fetch {pages}` 自动翻页已移植（v0.2）。
+- 仍未移植：出厂经验 `docs/经验/` 随二进制分发的打包机制（当前开发场景从源码目录读取，`cargo install` 场景需把 `docs/经验` 拷到二进制旁）；多实例审计话术等少量边角。
 
 **2. 生态与迭代速度**
 - 原版迭代飞快（README 记录的 0.1→1.3 十几个版本、每周多次修复），且协议演进由原版主导；Rust 版是**追随者**，原版协议 v2 出来之前必须人工对齐，存在滞后窗口。
@@ -159,7 +163,7 @@ res 按 `__k` 配对且剥离、ping→pong、event 广播、agent 断线推 `se
 
 ### 什么时候选哪个
 
-- **选原版**：要完整功能（install 自动化、剧本回流、Windows）、要跟最新协议演进。
+- **选原版**：要 Windows 原生支持、要跟最新协议演进（原版迭代快，Rust 版是追随者）。
 - **选 Rust 版**：桥常驻内存敏感（小内存服务器/树莓派级设备）、无 Node 环境、企业环境要单二进制审计分发、多 agent 高并发会话、或者你就是想看这套协议在 Rust 类型系统下长什么样。
 
 ## 许可

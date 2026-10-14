@@ -145,19 +145,48 @@ pub async fn run(flag_client: Option<String>) {
 }
 
 async fn handle_tool(state: &Arc<Mutex<State>>, name: &str, args: Value) -> Result<String, crate::rpc::ClientError> {
+    // learnings 是纯本地读写，不需要桥和浏览器。但要进审计：
+    // 「LEARNINGS FIRST 到底有没有人遵守」得量得出来。
     if name == "learnings" {
         let domain = args.get("domain").and_then(|d| d.as_str()).unwrap_or("");
-        let text = match args.get("save") {
-            Some(s) if !s.is_null() => learnings::save_learning(domain, json!({"note": s, "ts": paths::now_iso()})).to_string(),
-            _ => learnings::get(domain).to_string(),
+        let text = if let Some(adopt) = args.get("adopt").and_then(|a| a.as_str()) {
+            learnings::adopt_draft(domain, adopt, args.get("name").and_then(|n| n.as_str()))
+        } else if let Some(save) = args.get("save").and_then(|s| s.as_str()) {
+            learnings::save_learnings(domain, save)
+        } else {
+            learnings::get_learnings(domain)
         };
+        paths::audit(json!({
+            "ev": "cmd", "id": format!("local:{}", chrono::Utc::now().timestamp_millis()),
+            "cmd": "learnings",
+            "params": {"domain": domain, "save": args.get("save").map(|s| json!(format!("<{}字>", s.as_str().map(|x| x.chars().count()).unwrap_or(0)))), "adopt": args.get("adopt").cloned().unwrap_or(Value::Null)}
+        }));
         return Ok(text);
     }
 
     let tab_id = args.get("tabId").and_then(|t| t.as_u64());
-    let timeout = Duration::from_secs(35);
-
     let st = state.lock().await;
+
+    // 翻页在这一侧循环：扩展只管发单次请求，循环、落盘、停机判定都不该经过模型
+    if name == "fetch" && args.get("pages").is_some() && !args.get("binary").and_then(|b| b.as_bool()).unwrap_or(false) {
+        return Ok(fetch_pages(&st.client, &args).await?);
+    }
+
+    // 慢命令的超时预算。桥默认 30s，而 wait/act/ask/download 的耗时上限由参数决定，
+    // 可以合法超过它。只放宽、不收窄——收窄会把「已经在做」报成「没做，去重试」。
+    let cap = |ms: u64| ms.clamp(35_000, 600_000);
+    let timeout = Duration::from_millis(match name {
+        "download" => 150_000,
+        "ask" => {
+            let t = args.get("timeout").and_then(|v| v.as_u64()).unwrap_or(300_000).clamp(5_000, 600_000);
+            t + 20_000
+        }
+        "wait" => cap(args.get("timeout").and_then(|v| v.as_u64()).unwrap_or(10_000) + 15_000),
+        // act 一步步跑，每步都可能等 settle 和 L2 重试；预算必须和扩展侧同源（flat_count）
+        "act" => cap(learnings::flat_count(args.get("steps").unwrap_or(&Value::Null)).max(1).min(60) * 8_000 + 20_000),
+        _ => 35_000,
+    });
+
     // upload：先把**路径**交给扩展，让它用 CDP 的 DOM.setFileInputFiles 让浏览器自己读盘；
     // 只有拖放（页面没有 file input）真的需要字节时才在这一侧读文件转 base64。
     let mut data = st.client.call(name, args.clone(), tab_id, timeout).await?;
@@ -177,13 +206,180 @@ async fn handle_tool(state: &Arc<Mutex<State>>, name: &str, args: Value) -> Resu
         }
     }
 
+    // 浏览器只能下到 Downloads；下完挪到 agent 要的位置，对它保持透明
+    if name == "download" {
+        if let (Some(save), Some(p)) = (args.get("savePath").and_then(|s| s.as_str()), data.get("path").and_then(|p| p.as_str())) {
+            if let Some(parent) = std::path::Path::new(save).parent() {
+                let _ = std::fs::create_dir_all(parent);
+            }
+            if std::fs::rename(p, save).is_ok() {
+                return Ok(format!("已下载 {}KB → {}", data.get("bytes").and_then(|b| b.as_u64()).unwrap_or(0) / 1024, save));
+            }
+        }
+    }
+
+    // act 完整跑通 → 落一份剧本草稿（扩展已把 ref 换成 find、输入换成占位符）
+    let mut draft_note = String::new();
+    if name == "act" {
+        if let (Some(from), Some(recipe)) = (data.get("recipeFrom").and_then(|v| v.as_str()).map(|s| s.to_string()), data.get("recipe").cloned()) {
+            if let Some((key, id, runs)) = learnings::save_draft(&from, &recipe) {
+                draft_note = format!(
+                    "\n\n💾 这段流程已存为剧本草稿 {}（{}{}）。以后还会用到的话：learnings({{domain:\"{}\", adopt:\"{}\", name:\"…\"}}) 收进经验，下次一条 act 跑完。",
+                    id,
+                    key,
+                    if runs > 1 { format!("，同样的步骤已跑通 {} 次", runs) } else { String::new() },
+                    key,
+                    id
+                );
+            }
+            if let Some(o) = data.as_object_mut() {
+                o.remove("recipe");
+                o.remove("recipeFrom");
+            }
+        }
+    }
+
     // 页面文本统一降权包裹（扩展侧已包过的不重复包）
     let text = match &data {
         Value::String(s) => s.clone(),
         o => o.get("text").and_then(|t| t.as_str()).map(|s| s.to_string()).unwrap_or_else(|| serde_json::to_string(o).unwrap_or_default()),
     };
     let already_wrapped = text.contains("<page-content untrusted");
-    Ok(if already_wrapped { text } else if matches!(name, "snapshot" | "read_text" | "query") { wrap_untrusted(&text, "") } else { text })
+    let body = if already_wrapped {
+        text
+    } else if matches!(name, "snapshot" | "read_text" | "query") {
+        wrap_untrusted(&text, "")
+    } else {
+        text
+    };
+    Ok(body + &draft_note)
+}
+
+// ---------- fetch {pages} 自动翻页 ----------
+// 页码型：改一个 query 参数递增；游标型：从上一页响应里按路径取下一个游标。
+// 停机判据都是确定性的：非 2xx、空体、和上一页一模一样、游标为空或没变、跑满 max。
+// 落盘是每页一行 JSON（url/status/body），body 能解析成 JSON 就存解析后的。
+
+fn path_get<'a>(obj: &'a Value, p: &str) -> Option<&'a Value> {
+    p.split('.').filter(|s| !s.is_empty()).fold(Some(obj), |o, k| o?.get(k))
+}
+
+async fn fetch_pages(client: &crate::rpc::BridgeClient, args: &Value) -> Result<String, crate::rpc::ClientError> {
+    let pg = args.get("pages").cloned().unwrap_or(json!({}));
+    let param = pg.get("param").and_then(|v| v.as_str()).map(|s| s.to_string());
+    let cursor_param = pg.get("cursorParam").and_then(|v| v.as_str()).map(|s| s.to_string());
+    if param.is_none() && cursor_param.is_none() {
+        return Err(crate::rpc::ClientError { code: "INTERNAL".into(), message: "pages 需要 param（页码参数名）或 cursorParam（游标参数名）".into() });
+    }
+    let max = pg.get("max").and_then(|v| v.as_u64()).unwrap_or(10).clamp(1, 50);
+    let base_url = args.get("url").and_then(|u| u.as_str()).unwrap_or("");
+    let base = url::Url::parse(base_url).map_err(|e| crate::rpc::ClientError { code: "INTERNAL".into(), message: format!("url 不合法: {}", e) })?;
+    let step = pg.get("step").and_then(|v| v.as_i64()).unwrap_or(1);
+    let mut n: i64 = match (&param, pg.get("from").and_then(|v| v.as_i64())) {
+        (_, Some(from)) => from,
+        (Some(p), None) => base.query_pairs().find(|(k, _)| k == p).and_then(|(_, v)| v.parse().ok()).unwrap_or(1),
+        (None, None) => 0,
+    };
+    let mut cursor: Option<String> = match &cursor_param {
+        Some(cp) => Some(base.query_pairs().find(|(k, _)| k == cp).map(|(_, v)| v.to_string()).unwrap_or_default()),
+        None => None,
+    };
+    let init = args.get("init").cloned().unwrap_or(Value::Null);
+    let via = args.get("via").cloned().unwrap_or(Value::Null);
+    let max_body = args.get("maxBody").and_then(|v| v.as_u64()).unwrap_or(2_000_000);
+    let empty_body = regex::Regex::new(r"^\s*(\[\s*\]|\{\s*\}|null)?\s*$").unwrap();
+
+    let mut pages_out: Vec<(String, u64, Value, String)> = vec![]; // url, status, body(parsed|raw), raw
+    let mut prev: Option<String> = None;
+    let mut stop = String::new();
+
+    for i in 0..max {
+        let mut u = base.clone();
+        {
+            let mut qs = u.query_pairs_mut();
+            if let Some(p) = &param {
+                qs.append_pair(p, &n.to_string());
+            }
+            if let (Some(cp), Some(cv)) = (&cursor_param, &cursor) {
+                if !cv.is_empty() {
+                    qs.append_pair(cp, cv);
+                }
+            }
+        }
+        let us = u.to_string();
+        let data = client
+            .call("fetch", json!({"url": us, "init": init, "maxBody": max_body, "via": via}), args.get("tabId").and_then(|t| t.as_u64()), Duration::from_millis(60_000))
+            .await?;
+        // 扩展回的格式：首行状态码 + 空行 + body
+        let text = data.get("text").and_then(|t| t.as_str()).unwrap_or("");
+        let (status, body) = match text.split_once("\n\n") {
+            Some((head, rest)) => (head.trim().parse::<u64>().unwrap_or(0), rest.to_string()),
+            None => (text.trim().parse::<u64>().unwrap_or(0), String::new()),
+        };
+        if !(200..300).contains(&status) {
+            stop = format!("第 {} 页返回 {}，停下", i + 1, status);
+            break;
+        }
+        if empty_body.is_match(&body) {
+            stop = format!("第 {} 页是空的，翻到头了", i + 1);
+            break;
+        }
+        if Some(&body) == prev.as_ref() {
+            stop = format!("第 {} 页和上一页一模一样，翻到头了（服务端多半把超出范围的页码钉在最后一页）", i + 1);
+            break;
+        }
+        let parsed: Value = serde_json::from_str(&body).unwrap_or(Value::String(body.clone()));
+        pages_out.push((us, status, parsed, body.clone()));
+        prev = Some(body);
+        if cursor_param.is_some() {
+            let next = path_get(&pages_out.last().unwrap().2, pg.get("cursorPath").and_then(|v| v.as_str()).unwrap_or("")).map(|v| match v {
+                Value::String(s) => s.clone(),
+                other => other.to_string(),
+            }).unwrap_or_default();
+            if next.is_empty() || next == "null" || cursor.as_deref() == Some(next.as_str()) {
+                stop = format!("第 {} 页之后游标为空，翻到头了", i + 1);
+                break;
+            }
+            cursor = Some(next);
+        } else {
+            n += step;
+        }
+    }
+    if stop.is_empty() {
+        stop = format!("跑满 max={} 页停下（可能还有更多：把 from 设成 {} 再来一次）", max, if param.is_some() { n.to_string() } else { "下一个游标".into() });
+    }
+
+    let kb: usize = pages_out.iter().map(|(_, _, _, raw)| raw.len()).sum::<usize>() / 1024;
+    let head = format!("已抓 {} 页 · 共 {}KB · {}", pages_out.len(), kb, stop);
+
+    if let Some(save) = args.get("savePath").and_then(|s| s.as_str()) {
+        if let Some(parent) = std::path::Path::new(save).parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        let lines: Vec<String> = pages_out
+            .iter()
+            .map(|(u, s, b, _)| serde_json::to_string(&json!({"url": u, "status": s, "body": b})).unwrap_or_default())
+            .collect();
+        let _ = std::fs::write(save, lines.join("\n") + "\n");
+        let preview: String = pages_out.first().map(|(_, _, _, raw)| raw.chars().take(1500).collect()).unwrap_or_default();
+        let more = pages_out.first().map(|(_, _, _, raw)| raw.chars().count() >= 1500).unwrap_or(false);
+        return Ok(format!("{} → {}（每行一页 JSON：url/status/body）\n\n{}", head, save, wrap_untrusted(&format!("第 1 页预览：\n{}{}", preview, if more { "…" } else { "" }), "")));
+    }
+
+    let cap = args.get("maxBody").and_then(|v| v.as_u64()).unwrap_or(200_000) as usize;
+    let mut out = String::new();
+    let mut used = 0usize;
+    let total = pages_out.len();
+    for (idx, (u, s, _, raw)) in pages_out.iter().enumerate() {
+        let chunk = format!("--- {} ({}) ---\n{}\n", u, s, raw);
+        if used + chunk.len() > cap {
+            out.push_str(&format!("\n…（超过 maxBody={}，后面 {} 页没放进来；带 savePath 落盘能拿全）", cap, total - idx));
+            break;
+        }
+        out.push_str(&chunk);
+        used += chunk.len();
+    }
+    Ok(format!("{}\n\n{}", head, wrap_untrusted(&out, "")))
 }
 
 fn ok(id: Option<Value>, result: Value) -> Value {

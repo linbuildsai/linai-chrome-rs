@@ -4,6 +4,7 @@
 mod bridge;
 mod compat;
 mod host;
+mod install;
 mod learnings;
 mod mcp;
 mod paths;
@@ -49,6 +50,15 @@ enum Cmd {
     },
     /// 打印扩展加载步骤
     Extension,
+    /// 一键安装：探测本机 agent，备份并写入各家 MCP 配置
+    Install {
+        /// 只看会改哪些配置，不写
+        #[arg(long)]
+        dry_run: bool,
+        /// 只配这一个 agent（按 client slug）
+        #[arg(long)]
+        only: Option<String>,
+    },
 }
 
 fn main() {
@@ -98,6 +108,7 @@ fn main() {
             println!("chrome://extensions → 打开右上角「开发者模式」→「加载已解压的扩展程序」→ 选择上面的目录。");
             println!("装好后点工具栏的 huashu-chrome 图标，看到「已连接」即可。");
         }
+        Cmd::Install { dry_run, only } => install::run(dry_run, only.as_deref()),
     }
 }
 

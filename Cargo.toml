@@ -1,6 +1,6 @@
 [package]
 name = "linai-chrome-rs"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 description = "Rust rewrite of huashu-chrome: let any MCP-capable AI agent drive your own Chrome, with all your logins already in it. Bridge daemon + MCP server + CLI, protocol-compatible with the original Node.js implementation."
 license = "MIT"
