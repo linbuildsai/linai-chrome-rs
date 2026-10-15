@@ -463,13 +463,15 @@ impl Bridge {
                     o.close();
                 }
                 let level = {
-                    let (ev, ep) = peer.get(|s| (s.ext_version.clone(), s.ext_protocol));
-                    compat::compat(ev.as_deref().unwrap_or(""), VERSION, ep.unwrap_or(compat::PROTOCOL), compat::PROTOCOL)
+                    let ep = peer.get(|s| s.ext_protocol);
+                    compat::compat(ep.unwrap_or(compat::PROTOCOL), compat::PROTOCOL)
                 };
-                if level != "same" && level != "patch" {
+                if level == "protocol" {
                     let (ev, ep) = peer.get(|s| (s.ext_version.clone(), s.ext_protocol));
-                    self.log(&format!("⚠️  {}", compat::compat_note(level, ev.as_deref().unwrap_or("?"), VERSION)));
-                    let _ = ep;
+                    self.log(&format!(
+                        "⚠️  {}",
+                        compat::compat_note(level, ev.as_deref().unwrap_or("?"), VERSION, ep.unwrap_or(compat::PROTOCOL), compat::PROTOCOL)
+                    ));
                 }
                 self.log(&format!("扩展已连接（{}）", Self::ext_label(peer)));
                 let live = self.live_extensions();
@@ -523,9 +525,8 @@ impl Bridge {
                 };
                 let mismatch = match &ext {
                     Some(e) => {
-                        let (ev, ep) = e.get(|s| (s.ext_version.clone(), s.ext_protocol));
-                        let lvl = compat::compat(ev.as_deref().unwrap_or(""), VERSION, ep.unwrap_or(compat::PROTOCOL), compat::PROTOCOL);
-                        lvl != "same" && lvl != "patch"
+                        let ep = e.get(|s| s.ext_protocol);
+                        compat::compat(ep.unwrap_or(compat::PROTOCOL), compat::PROTOCOL) == "protocol"
                     }
                     None => false,
                 };

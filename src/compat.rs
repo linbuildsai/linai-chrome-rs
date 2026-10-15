@@ -1,60 +1,70 @@
-//! 扩展和本地端兼不兼容 —— 与原版 extension/compat.js 对齐。
-//! 分级：same / patch（静默）/ ext-old / cli-old / protocol（真不兼容）。
+//! 扩展和本地端兼不兼容 —— 判定的**唯一真源是协议号**（PROTOCOL）。
+//!
+//! 为什么不比产品版本号：原版里桥和扩展同属一个 npm 包、版本号同源，
+//! 拿 semver 比是对的。但本项目桥是 Rust 实现、扩展原样复用原版，
+//! 两条版本号来自不相干的发布线（本地端 0.2.0 vs 扩展 1.2.0），
+//! 比较毫无意义——只会永远误报「本地端旧」。协议号一致就是兼容，
+//! 这才是三方约定的契约。版本号只用于展示，不参与兼容判定。
+//!
+//! 分级：same（协议一致，兼容）/ protocol（协议不同，真不兼容）。
 pub const PROTOCOL: u32 = crate::paths::PROTOCOL;
 
-fn parse(v: &str) -> [u32; 3] {
-    let mut out = [0u32; 3];
-    for (i, part) in v.split('.').take(3).enumerate() {
-        out[i] = part.trim().parse().unwrap_or(0);
-    }
-    out
-}
-
-pub fn cmp_version(a: &str, b: &str) -> i32 {
-    let (x, y) = (parse(a), parse(b));
-    for i in 0..3 {
-        if x[i] != y[i] {
-            return if x[i] < y[i] { -1 } else { 1 };
-        }
-    }
-    0
-}
-
-pub fn compat(ext: &str, cli: &str, ext_protocol: u32, cli_protocol: u32) -> &'static str {
-    if ext.is_empty() || cli.is_empty() {
-        return "same";
-    }
-    if ext_protocol != cli_protocol {
-        return "protocol";
-    }
-    let c = cmp_version(ext, cli);
-    if c == 0 {
-        return "same";
-    }
-    let (a, b) = (parse(ext), parse(cli));
-    if a[0] == b[0] && a[1] == b[1] {
-        return "patch";
-    }
-    if c < 0 {
-        "ext-old"
+/// 只按协议号判兼容：一致 → same，不一致 → protocol。
+/// 扩展版本号与本地端版本号不再参与判定（它们来自不同发布线，不可比）。
+pub fn compat(ext_protocol: u32, cli_protocol: u32) -> &'static str {
+    if ext_protocol == cli_protocol {
+        "same"
     } else {
-        "cli-old"
+        "protocol"
     }
 }
 
 pub const UPDATE_EXT: &str = "商店装的扩展 Chrome 会在几小时内自动更新；等不及就打开 chrome://extensions，开「开发者模式」后点「更新」。手动加载的扩展要去那一页点「重新加载」。";
-pub const UPDATE_CLI: &str = "在终端跑一次 linai-chrome-rs（cargo build --release）更新二进制，然后重启你的 agent。";
+pub const UPDATE_CLI: &str = "更新 linai-chrome-rs 到匹配协议号的版本（git pull 后 cargo build --release），然后重启你的 agent。";
 
-pub fn compat_note(level: &str, ext: &str, cli: &str) -> String {
-    match level {
-        "protocol" => format!(
-            "扩展 v{} 和本地端 v{} 的通信协议不兼容，命令可能失败。{}",
-            ext,
-            cli,
-            if cmp_version(ext, cli) < 0 { UPDATE_EXT } else { UPDATE_CLI }
-        ),
-        "ext-old" => format!("扩展 v{} 比本地端 v{} 旧，新功能可能还用不了。{}", ext, cli, UPDATE_EXT),
-        "cli-old" => format!("本地端 v{} 比扩展 v{} 旧，有新功能没用上。{}", cli, ext, UPDATE_CLI),
-        _ => String::new(),
+/// 给人看的一句话。same 返回空串——协议一致就别说话。
+pub fn compat_note(level: &str, ext: &str, cli: &str, ext_protocol: u32, cli_protocol: u32) -> String {
+    if level != "protocol" {
+        return String::new();
+    }
+    format!(
+        "扩展（v{}，协议 v{}）和本地端（v{}，协议 v{}）的通信协议不兼容，命令可能失败。{}",
+        ext, ext_protocol, cli, cli_protocol,
+        if ext_protocol < cli_protocol { UPDATE_EXT } else { UPDATE_CLI }
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn same_protocol_is_compatible() {
+        assert_eq!(compat(1, 1), "same");
+    }
+
+    #[test]
+    fn different_protocol_is_incompatible() {
+        assert_eq!(compat(1, 2), "protocol");
+        assert_eq!(compat(2, 1), "protocol");
+    }
+
+    #[test]
+    fn version_numbers_do_not_trigger_warning() {
+        // 回归：本地端 0.2.0 与扩展 1.2.0，协议都是 1 —— 必须兼容、无警告。
+        // 这正是用户遇到的误报场景。
+        assert_eq!(compat(1, 1), "same");
+        assert!(compat_note("same", "1.2.0", "0.2.0", 1, 1).is_empty());
+    }
+
+    #[test]
+    fn protocol_mismatch_message_points_to_the_right_side() {
+        // 扩展协议更旧 → 提示更新扩展
+        let note = compat_note("protocol", "1.2.0", "0.2.0", 1, 2);
+        assert!(note.contains("不兼容"));
+        assert!(note.contains("chrome://extensions"), "应指向扩展更新: {}", note);
+        // 本地端协议更旧 → 提示更新本地端
+        let note2 = compat_note("protocol", "1.2.0", "0.2.0", 2, 1);
+        assert!(note2.contains("cargo build --release"), "应指向本地端更新: {}", note2);
     }
 }

@@ -49,7 +49,7 @@ try {
 
 // 2) 扩展握手
 const ext = await connect({ origin: 'chrome-extension://testextid123' });
-ext.send(JSON.stringify({ type: 'hello', role: 'extension', extId: 'testextid123', v: 1, chrome: '141.0', version: '1.3.0', instanceId: 'inst-test' }));
+ext.send(JSON.stringify({ type: 'hello', role: 'extension', extId: 'testextid123', v: 1, chrome: '141.0', version: '1.2.0', instanceId: 'inst-test' }));
 const wExt = await nextMsg(ext, (m) => m.type === 'welcome');
 ok('扩展收到 welcome', wExt.bridge !== undefined && wExt.v === 1);
 
